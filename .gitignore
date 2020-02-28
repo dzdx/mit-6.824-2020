@@ -1,3 +1,10 @@
 pkg/
 api.key
 *-handin.tar.gz
+.idea/
+*.so
+mr-tmp
+mrmaster
+mrsequential
+mrworker
+
