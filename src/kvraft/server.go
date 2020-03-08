@@ -3,10 +3,18 @@ package kvraft
 import (
 	"../labgob"
 	"../labrpc"
-	"log"
+	"../logging"
 	"../raft"
+	"context"
+	"fmt"
+	"log"
 	"sync"
 	"sync/atomic"
+	"time"
+)
+
+const (
+	NotLeader = "not leader"
 )
 
 const Debug = 0
@@ -18,11 +26,20 @@ func DPrintf(format string, a ...interface{}) (n int, err error) {
 	return
 }
 
+type requestFuture struct {
+	index  int
+	respCh chan interface{}
+}
 
 type Op struct {
 	// Your definitions here.
 	// Field names must start with capital letters,
 	// otherwise RPC will break.
+}
+
+type call struct {
+	value interface{}
+	time  time.Time
 }
 
 type KVServer struct {
@@ -35,15 +52,55 @@ type KVServer struct {
 	maxraftstate int // snapshot if log grows this big
 
 	// Your definitions here.
+	inflightFutures sync.Map
+	data            map[string]string
+	calls           map[int64]*call
+
+	ctx    context.Context
+	cancel context.CancelFunc
+	logger *logging.Logger
 }
 
+func (kv *KVServer) serve(command interface{}, reqID int64) (interface{}, error) {
+	future := &requestFuture{
+		respCh: make(chan interface{}, 1),
+	}
+	kv.inflightFutures.Store(reqID, future)
+	defer kv.inflightFutures.Delete(reqID)
+	_, _, isLeader := kv.rf.Start(command)
+	if !isLeader {
+		return "", fmt.Errorf(NotLeader)
+	}
+	kv.logger.Debugf("start %#v", command)
+	select {
+	case obj := <-future.respCh:
+		return obj, nil
+	case <-kv.ctx.Done():
+		kv.logger.Warnf("canceled: %d", reqID)
+		return "", fmt.Errorf("canceled")
+	case <-time.After(2 * time.Second):
+		kv.logger.Warnf("timeout: %d", reqID)
+		return "", fmt.Errorf("timeout")
+	}
+}
 
 func (kv *KVServer) Get(args *GetArgs, reply *GetReply) {
 	// Your code here.
+	resp, err := kv.serve(*args, args.ID)
+	if err != nil {
+		reply.Err = Err(err.Error())
+		return
+	}
+	reply.Value = resp.(string)
 }
 
 func (kv *KVServer) PutAppend(args *PutAppendArgs, reply *PutAppendReply) {
 	// Your code here.
+	_, err := kv.serve(*args, args.ID)
+	if err != nil {
+		reply.Err = Err(err.Error())
+	}
+	return
 }
 
 //
@@ -58,6 +115,7 @@ func (kv *KVServer) PutAppend(args *PutAppendArgs, reply *PutAppendReply) {
 //
 func (kv *KVServer) Kill() {
 	atomic.StoreInt32(&kv.dead, 1)
+	kv.cancel()
 	kv.rf.Kill()
 	// Your code here, if desired.
 }
@@ -65,6 +123,59 @@ func (kv *KVServer) Kill() {
 func (kv *KVServer) killed() bool {
 	z := atomic.LoadInt32(&kv.dead)
 	return z == 1
+}
+func (kv *KVServer) cleanCalls() {
+	ticker := time.NewTicker(time.Second)
+	defer ticker.Stop()
+	for {
+		select {
+		case <-kv.ctx.Done():
+			return
+		case <-ticker.C:
+			kv.mu.Lock()
+			for k, call := range kv.calls {
+				if time.Since(call.time) > 10*time.Second {
+					delete(kv.calls, k)
+				}
+			}
+			kv.mu.Unlock()
+		}
+	}
+}
+
+func (kv *KVServer) processApply() {
+	for {
+		select {
+		case <-kv.ctx.Done():
+			return
+		case msg := <-kv.applyCh:
+			var resp interface{}
+			var reqID int64
+			switch args := msg.Command.(type) {
+			case GetArgs:
+				reqID = args.ID
+				resp = kv.data[args.Key]
+			case PutAppendArgs:
+				kv.mu.Lock()
+				if _, ok := kv.calls[args.ID]; !ok {
+					if args.Op == "Append" {
+						kv.data[args.Key] = kv.data[args.Key] + args.Value
+					} else {
+						kv.data[args.Key] = args.Value
+					}
+					kv.calls[args.ID] = &call{time: time.Now()}
+				}
+				kv.mu.Unlock()
+				reqID = args.ID
+			}
+			if obj, ok := kv.inflightFutures.Load(reqID); ok {
+				future := obj.(*requestFuture)
+				kv.logger.Debugf("respond %#v", msg.Command)
+				future.respCh <- resp
+				break
+			}
+		}
+	}
 }
 
 //
@@ -85,6 +196,8 @@ func StartKVServer(servers []*labrpc.ClientEnd, me int, persister *raft.Persiste
 	// call labgob.Register on structures you want
 	// Go's RPC library to marshall/unmarshall.
 	labgob.Register(Op{})
+	labgob.Register(GetArgs{})
+	labgob.Register(PutAppendArgs{})
 
 	kv := new(KVServer)
 	kv.me = me
@@ -94,8 +207,16 @@ func StartKVServer(servers []*labrpc.ClientEnd, me int, persister *raft.Persiste
 
 	kv.applyCh = make(chan raft.ApplyMsg)
 	kv.rf = raft.Make(servers, me, persister, kv.applyCh)
+	kv.data = make(map[string]string)
+	kv.calls = make(map[int64]*call)
+	kv.ctx, kv.cancel = context.WithCancel(context.Background())
+	kv.logger = logging.NewLogger(logging.InfoLevel, true, func() string {
+		return fmt.Sprintf("[KVServer] [id %d]", kv.me)
+	})
 
 	// You may need initialization code here.
+	go kv.processApply()
+	go kv.cleanCalls()
 
 	return kv
 }

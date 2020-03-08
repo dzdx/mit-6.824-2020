@@ -20,9 +20,11 @@ package raft
 import (
 	"../labgob"
 	"../labrpc"
+	"../logging"
 	"bytes"
 	"container/list"
 	"context"
+	"fmt"
 	"sort"
 	"sync"
 	"sync/atomic"
@@ -198,9 +200,10 @@ type Raft struct {
 	applyCh           chan ApplyMsg
 	notifyApplyCh     chan struct{}
 	logs              map[uint64]LogEntry
+	logsMutex         sync.Mutex
 	ctx               context.Context
 	cancel            context.CancelFunc
-	logLevel          logLevel
+	logger            *logging.Logger
 
 	// Your data here (2A, 2B, 2C).
 	// Look at the paper's Figure 2 for a description of what
@@ -227,7 +230,9 @@ func (rf *Raft) persist() {
 	e.Encode(rf.getCurrentTerm())
 	e.Encode(rf.votedFor)
 	e.Encode(rf.votedForTerm)
+	rf.logsMutex.Lock()
 	e.Encode(rf.logs)
+	rf.logsMutex.Unlock()
 	data := w.Bytes()
 	rf.persister.SaveRaftState(data)
 	// Your code here (2C).
@@ -307,6 +312,7 @@ type RequestVoteArgs struct {
 type RequestVoteReply struct {
 	Term        uint64
 	VoteGranted bool
+	ServerID    int
 	// Your data here (2A).
 }
 
@@ -336,14 +342,15 @@ func (rf *Raft) getLeader() int {
 func (rf *Raft) RequestVote(args *RequestVoteArgs, reply *RequestVoteReply) {
 	defer func() {
 		reply.Term = rf.getCurrentTerm()
+		reply.ServerID = rf.me
 	}()
-	leaderID := rf.getLeader()
-	if leaderID != -1 && leaderID != args.CandidateID {
-		rf.logging(warnLevel, "refused request vote from %d: (now has another leader)", args.CandidateID)
+	leaderID := rf.getValidLeader()
+	if leaderID >= 0 && leaderID != args.CandidateID {
+		rf.logger.Warnf("refused request vote from %d: (now has another leader)", args.CandidateID)
 		return
 	}
 	if args.Term < rf.getCurrentTerm() {
-		rf.logging(warnLevel, "refused request vote from %d: (term smaller)", args.CandidateID)
+		rf.logger.Warnf("refused request vote from %d: (term smaller)", args.CandidateID)
 		return
 	}
 	if args.Term > rf.getCurrentTerm() {
@@ -351,19 +358,19 @@ func (rf *Raft) RequestVote(args *RequestVoteArgs, reply *RequestVoteReply) {
 		rf.setRole(follower)
 	}
 	if args.LastLogTerm < rf.lastLogTerm {
-		rf.logging(warnLevel, "refused request vote from %d: (lastlog term smaller)", args.CandidateID)
+		rf.logger.Warnf("refused request vote from %d: (lastlog term smaller)", args.CandidateID)
 		return
 	}
 	lastLogIndex, lastLogTerm := rf.getLastLog()
 	if args.LastLogTerm == lastLogTerm && args.LastLogIndex < lastLogIndex {
-		rf.logging(warnLevel, "refused request vote from %d: (lastlog index smaller)", args.CandidateID)
+		rf.logger.Warnf("refused request vote from %d: (lastlog index smaller)", args.CandidateID)
 		return
 	}
 
 	if rf.vote(args.CandidateID, args.Term) {
 		reply.VoteGranted = true
 	} else {
-		rf.logging(warnLevel, "refused request vote from %d: (has voted to %d)", args.CandidateID, rf.votedFor)
+		rf.logger.Warnf("refused request vote from %d: (has voted to %d)", args.CandidateID, rf.votedFor)
 	}
 	// Your code here (2A, 2B).
 }
@@ -376,7 +383,7 @@ func (rf *Raft) vote(server int, term uint64) bool {
 		votedFor = rf.votedFor
 	}
 	if votedFor < 0 || votedFor == server {
-		rf.logging(debugLevel, "vote for %d", server)
+		rf.logger.Debugf("vote for %d", server)
 		rf.votedFor = server
 		rf.votedForTerm = term
 		rf.persist()
@@ -386,8 +393,8 @@ func (rf *Raft) vote(server int, term uint64) bool {
 }
 
 func (rf *Raft) deleteLogEntriesRange(start, end uint64) {
-	rf.mu.Lock()
-	defer rf.mu.Unlock()
+	rf.logsMutex.Lock()
+	defer rf.logsMutex.Unlock()
 	for i := start; i < end; i++ {
 		delete(rf.logs, i)
 	}
@@ -399,7 +406,7 @@ func (rf *Raft) AppendEntries(args *AppendEntriesArgs, reply *AppendEntriesReply
 		reply.CommitIndex = rf.getCommitIndex()
 	}()
 	if args.Term < rf.getCurrentTerm() {
-		rf.logging(warnLevel, "refused append entries from %d: (term smaller)", args.LeaderID)
+		rf.logger.Warnf("refused append entries from %d: (term smaller)", args.LeaderID)
 		return
 	}
 	if args.Term > rf.getCurrentTerm() || rf.getRole() != follower {
@@ -411,12 +418,12 @@ func (rf *Raft) AppendEntries(args *AppendEntriesArgs, reply *AppendEntriesReply
 		prevLog := rf.getLogEntry(args.PrevLogIndex)
 		if prevLog == nil {
 			reply.ConflictIndex = lastLogIndex + 1
-			rf.logging(warnLevel, "refused append entries from %d: (prev log %d not existed)", args.LeaderID, args.PrevLogIndex)
+			rf.logger.Warnf("refused append entries from %d: (prev log %d not existed)", args.LeaderID, args.PrevLogIndex)
 			return
 		}
 		if args.PrevLogTerm != prevLog.Term {
 			reply.ConflictIndex = rf.getFirstEntryByTerm(prevLog.Term).Index
-			rf.logging(warnLevel, "refused append entries from %d: (prev log %d conflict)", args.LeaderID, args.PrevLogIndex)
+			rf.logger.Warnf("refused append entries from %d: (prev log %d conflict)", args.LeaderID, args.PrevLogIndex)
 			return
 		}
 	}
@@ -430,7 +437,7 @@ func (rf *Raft) AppendEntries(args *AppendEntriesArgs, reply *AppendEntriesReply
 			}
 		}
 		if lastLogIndex >= deleteFromIndex {
-			rf.logging(debugLevel, "delete log entry [%d ... %d]", deleteFromIndex, lastLogIndex)
+			rf.logger.Debugf("delete log entry [%d ... %d]", deleteFromIndex, lastLogIndex)
 		}
 		rf.deleteLogEntriesRange(deleteFromIndex, lastLogIndex+1)
 		for _, newLogEntry := range args.LogEntries {
@@ -517,7 +524,7 @@ func (rf *Raft) Start(command interface{}) (int, int, bool) {
 	}
 	rf.leaderState.startBuffer.PushBack(logEntry)
 	rf.mu.Unlock()
-	rf.logging(debugLevel, "dispatch log entry %d", logEntry.Index)
+	rf.logger.Debugf("dispatch log entry %d", logEntry.Index)
 
 	AsyncNotify(rf.leaderState.startCh)
 	// Your code here (2B).
@@ -586,6 +593,7 @@ func (rf *Raft) electionLeader() chan *RequestVoteReply {
 				voteChan <- &RequestVoteReply{
 					Term:        rf.getCurrentTerm(),
 					VoteGranted: true,
+					ServerID:    rf.me,
 				}
 			} else {
 				lastLogIndex, lastLogTerm := rf.getLastLog()
@@ -607,6 +615,19 @@ func (rf *Raft) electionLeader() chan *RequestVoteReply {
 func (rf *Raft) quorumSize() int {
 	return len(rf.peers)/2 + 1
 }
+func (rf *Raft) getValidLeader() int {
+	leaderID := rf.getLeader()
+	if leaderID < 0 {
+		return leaderID
+	}
+	if rf.role == leader {
+		return rf.me
+	}
+	if time.Since(rf.lastContactLeader) < electionTimeout {
+		return leaderID
+	}
+	return -1
+}
 
 func (rf *Raft) runCandidate() {
 	rf.setCurrentTerm(rf.getCurrentTerm() + 1)
@@ -621,6 +642,12 @@ func (rf *Raft) runCandidate() {
 		case <-timer.C:
 			return
 		case reply := <-voteChan:
+			if reply.Term > rf.getCurrentTerm() {
+				rf.logger.Warnf("candidate switch to follower: (peer %d term %d)", reply.ServerID, reply.Term)
+				rf.setRole(follower)
+				rf.setCurrentTerm(reply.Term)
+				return
+			}
 			if reply.VoteGranted {
 				votes++
 				if votes >= quorumSize {
@@ -645,7 +672,7 @@ func (rf *Raft) runHeartbeat(f *followerReplication) {
 		before := time.Now()
 		if rf.sendAppendEntries(f.serverID, args, reply) {
 			if reply.Term > rf.getCurrentTerm() {
-				rf.logging(warnLevel, "switch to follower: (follower %d term %d > leader term)", f.serverID, reply.Term)
+				rf.logger.Warnf("leader switch to follower: (peer %d term %d)", f.serverID, reply.Term)
 				rf.setCurrentTerm(reply.Term)
 				rf.setRole(follower)
 				rf.leaderState.cancel()
@@ -654,7 +681,7 @@ func (rf *Raft) runHeartbeat(f *followerReplication) {
 				f.updateLastContract()
 			}
 		}
-		rf.logging(traceLevel, "heartbeat to %d %s %v %v", f.serverID, before.Format("15:04:05.000000"), time.Since(before), reply.Success)
+		rf.logger.Tracef("heartbeat to %d %s %v %v", f.serverID, before.Format("15:04:05.000000"), time.Since(before), reply.Success)
 	}
 	go heartbeat()
 	for rf.getRole() == leader {
@@ -676,16 +703,16 @@ func (rf *Raft) setCurrentTerm(term uint64) {
 }
 
 func (rf *Raft) getLogEntry(index uint64) *LogEntry {
-	rf.mu.Lock()
-	defer rf.mu.Unlock()
+	rf.logsMutex.Lock()
+	defer rf.logsMutex.Unlock()
 	if l, ok := rf.logs[index]; ok {
 		return &l
 	}
 	return nil
 }
 func (rf *Raft) getFirstEntryByTerm(term uint64) *LogEntry {
-	rf.mu.Lock()
-	defer rf.mu.Unlock()
+	rf.logsMutex.Lock()
+	defer rf.logsMutex.Unlock()
 	var ret *LogEntry
 	for i := range rf.logs {
 		entry := rf.logs[i]
@@ -715,9 +742,9 @@ func (rf *Raft) replicateOnce(f *followerReplication) {
 		prevLogIndex = f.nextIndex - 1
 		lastLogIndex, _ := rf.getLastLog()
 		if lastLogIndex >= f.nextIndex {
-			rf.logging(debugLevel, "replicate to %d [%d ... %d]", f.serverID, f.nextIndex, lastLogIndex)
+			rf.logger.Debugf("replicate to %d [%d ... %d]", f.serverID, f.nextIndex, lastLogIndex)
 		} else {
-			rf.logging(debugLevel, "replicate to %d []", f.serverID)
+			rf.logger.Debugf("replicate to %d []", f.serverID)
 		}
 		for nextIndex := f.nextIndex; nextIndex <= lastLogIndex; nextIndex++ {
 			entry := rf.getLogEntry(nextIndex)
@@ -742,7 +769,7 @@ func (rf *Raft) replicateOnce(f *followerReplication) {
 		if rf.sendAppendEntries(f.serverID, args, reply) {
 			retries = 0
 			if reply.Term > rf.getCurrentTerm() {
-				rf.logging(warnLevel, "switch to follower: (follower %d term %d > leader term)", f.serverID, reply.Term)
+				rf.logger.Warnf("leader switch to follower: (peer %d term %d)", f.serverID, reply.Term)
 				rf.setCurrentTerm(reply.Term)
 				rf.setRole(follower)
 				rf.leaderState.cancel()
@@ -790,9 +817,9 @@ func (rf *Raft) runReplicate(f *followerReplication) {
 }
 
 func (rf *Raft) putLogEntry(logEntry *LogEntry) {
-	rf.logging(debugLevel, "append log entry %d", logEntry.Index)
-	rf.mu.Lock()
-	defer rf.mu.Unlock()
+	rf.logger.Debugf("append log entry %d", logEntry.Index)
+	rf.logsMutex.Lock()
+	defer rf.logsMutex.Unlock()
 	rf.logs[logEntry.Index] = *logEntry
 }
 
@@ -825,7 +852,7 @@ func (rf *Raft) runLeader() {
 	defer func() {
 		rf.leaderState.cancel()
 		rf.leaderReadyCh = make(chan struct{})
-		rf.logging(warnLevel, "exit leader")
+		rf.logger.Warnf("exit leader")
 	}()
 	leaderLeaseTimer := time.NewTimer(electionTimeout)
 	defer leaderLeaseTimer.Stop()
@@ -844,7 +871,7 @@ func (rf *Raft) runLeader() {
 				}
 			}
 			if count+1 < rf.quorumSize() {
-				rf.logging(warnLevel, "leader lease expire")
+				rf.logger.Warnf("leader lease expire")
 				rf.setRole(follower)
 				rf.leaderState.cancel()
 				return
@@ -893,10 +920,12 @@ func (rf *Raft) run() {
 	for {
 		select {
 		case <-rf.ctx.Done():
+			// fast restart election leader
+			rf.setLeader(-1)
 			return
 		default:
 		}
-		rf.logging(infoLevel, "switch role")
+		rf.logger.Infof("switch role")
 		switch rf.getRole() {
 		case follower:
 			rf.runFollower()
@@ -924,15 +953,20 @@ func (rf *Raft) runApplyMsg() {
 		case <-rf.notifyApplyCh:
 			commitIndex := rf.getCommitIndex()
 			if rf.lastApplied < commitIndex {
-				rf.logging(debugLevel, "apply [%d ... %d]", rf.lastApplied+1, commitIndex)
+				rf.logger.Debugf("apply [%d ... %d]", rf.lastApplied+1, commitIndex)
 			}
 			for rf.lastApplied < commitIndex {
 				logEntry := rf.getLogEntry(rf.lastApplied + 1)
 				if logEntry.Type == commandType {
-					rf.applyCh <- ApplyMsg{
+					msg := ApplyMsg{
 						CommandValid: true,
 						Command:      logEntry.Command,
 						CommandIndex: int(logEntry.Index),
+					}
+					select {
+					case rf.applyCh <- msg:
+					case <-rf.ctx.Done():
+						return
 					}
 				}
 				rf.leaderState.inflightingEntries.Delete(logEntry.Index)
@@ -961,11 +995,15 @@ func Make(peers []*labrpc.ClientEnd, me int,
 	rf.me = me
 	rf.role = follower
 	rf.votedFor = -1
+	rf.leaderID = -1
 	rf.applyCh = applyCh
 	rf.logs = make(map[uint64]LogEntry, 0)
 	rf.notifyApplyCh = make(chan struct{}, 1)
 	rf.ctx, rf.cancel = context.WithCancel(context.Background())
-	rf.logLevel = infoLevel
+	rf.logger = logging.NewLogger(logging.InfoLevel, true, func() string {
+		lastLogIndex, lastLogTerm := rf.getLastLog()
+		return fmt.Sprintf("[Raft] [id %d] [role %10s] [term %4d] [lastlogindex %4d] [lastlogterm %4d]", rf.me, rf.getRole(), rf.currentTerm, lastLogIndex, lastLogTerm)
+	})
 
 	// Your initialization code here (2A, 2B, 2C).
 
@@ -975,4 +1013,38 @@ func Make(peers []*labrpc.ClientEnd, me int,
 	rf.goFunc(rf.runApplyMsg)
 	rf.goFunc(rf.run)
 	return rf
+}
+
+func (rf *Raft) overview() {
+	rf.logsMutex.Lock()
+	buf := bytes.Buffer{}
+	buf.WriteString("\n\n")
+	buf.WriteString(fmt.Sprintf("server: %d, role: %s term: %d\n", rf.me, rf.role, rf.currentTerm))
+	entrys := make([]LogEntry, 0, len(rf.logs))
+	for _, entry := range rf.logs {
+		entrys = append(entrys, entry)
+	}
+	rf.logsMutex.Unlock()
+
+	sort.Slice(entrys, func(i, j int) bool {
+		return entrys[i].Index < entrys[j].Index
+	})
+	indexBuf := bytes.Buffer{}
+	termBuf := bytes.Buffer{}
+	valueBuf := bytes.Buffer{}
+	indexBuf.WriteString("index: ")
+	termBuf.WriteString("term:  ")
+	valueBuf.WriteString("value: ")
+	for _, entry := range entrys {
+		indexBuf.WriteString(fmt.Sprintf("%5d", entry.Index))
+		termBuf.WriteString(fmt.Sprintf("%5d", entry.Term))
+		valueBuf.WriteString(fmt.Sprintf("%5v", entry.Command))
+	}
+	buf.Write(indexBuf.Bytes())
+	buf.WriteString("\n")
+	buf.Write(termBuf.Bytes())
+	buf.WriteString("\n")
+	buf.Write(valueBuf.Bytes())
+	buf.WriteString("\n")
+	fmt.Print(buf.String())
 }

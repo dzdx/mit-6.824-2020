@@ -27,7 +27,6 @@ func (rf *Raft) setLeader(leader int) {
 func (rf *Raft) setRole(role raftRole) {
 	oldRole := rf.getRole()
 	if oldRole != role {
-		rf.setLeader(-1)
 		roleAddr := (*uint32)(&rf.role)
 		atomic.StoreUint32(roleAddr, uint32(role))
 	}
