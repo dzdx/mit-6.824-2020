@@ -5,6 +5,7 @@ import (
 	"../labrpc"
 	"../logging"
 	"../raft"
+	"bytes"
 	"context"
 	"fmt"
 	"log"
@@ -27,19 +28,26 @@ func DPrintf(format string, a ...interface{}) (n int, err error) {
 }
 
 type requestFuture struct {
-	index  int
-	respCh chan interface{}
+	index        int
+	respCh       chan interface{}
+	respClientID int64
+	respSeqID    int64
 }
 
 type Op struct {
+	ClientID int64
+	SeqID    int64
+	Cmd      string
+	Key      string
+	Value    string
 	// Your definitions here.
 	// Field names must start with capital letters,
 	// otherwise RPC will break.
 }
 
-type call struct {
-	value interface{}
-	time  time.Time
+type seq struct {
+	SeqID int64
+	Time  int64
 }
 
 type KVServer struct {
@@ -54,53 +62,103 @@ type KVServer struct {
 	// Your definitions here.
 	inflightFutures sync.Map
 	data            map[string]string
-	calls           map[int64]*call
+	requests        map[int64]*seq
 
-	ctx    context.Context
-	cancel context.CancelFunc
-	logger *logging.Logger
+	ctx         context.Context
+	cancel      context.CancelFunc
+	logger      *logging.Logger
+	persister   *raft.Persister
+	snapshoting int32
 }
 
-func (kv *KVServer) serve(command interface{}, reqID int64) (interface{}, error) {
-	future := &requestFuture{
-		respCh: make(chan interface{}, 1),
-	}
-	kv.inflightFutures.Store(reqID, future)
-	defer kv.inflightFutures.Delete(reqID)
-	_, _, isLeader := kv.rf.Start(command)
-	if !isLeader {
-		return "", fmt.Errorf(NotLeader)
-	}
-	kv.logger.Debugf("start %#v", command)
-	select {
-	case obj := <-future.respCh:
-		return obj, nil
-	case <-kv.ctx.Done():
-		kv.logger.Warnf("canceled: %d", reqID)
-		return "", fmt.Errorf("canceled")
-	case <-time.After(2 * time.Second):
-		kv.logger.Warnf("timeout: %d", reqID)
-		return "", fmt.Errorf("timeout")
+func (kv *KVServer) checkSnapshot(index int) {
+	if kv.maxraftstate > 0 && kv.persister.RaftStateSize() > kv.maxraftstate*4/5 {
+		if atomic.SwapInt32(&kv.snapshoting, 1) == 0 {
+			w := new(bytes.Buffer)
+			e := labgob.NewEncoder(w)
+			e.Encode(kv.data)
+			e.Encode(kv.requests)
+			future := &raft.SnapshotFuture{
+				Data:             w.Bytes(),
+				LastIncludeIndex: uint64(index),
+				RespCh:           make(chan error, 1),
+			}
+			kv.rf.StartSnapshot(future)
+			go func() {
+				<-future.RespCh
+				atomic.StoreInt32(&kv.snapshoting, 0)
+			}()
+		}
 	}
 }
 
 func (kv *KVServer) Get(args *GetArgs, reply *GetReply) {
 	// Your code here.
-	resp, err := kv.serve(*args, args.ID)
-	if err != nil {
-		reply.Err = Err(err.Error())
+	command := Op{
+		ClientID: args.ClientID,
+		SeqID:    args.SeqID,
+		Cmd:      "Get",
+		Key:      args.Key,
+	}
+	future := &requestFuture{
+		respCh: make(chan interface{}, 1),
+	}
+
+	index, _, isLeader := kv.rf.Start(command)
+	kv.inflightFutures.Store(index, future)
+	defer kv.inflightFutures.Delete(index)
+	kv.logger.Debugf("start %#v", command)
+	if !isLeader {
+		reply.Err = NotLeader
 		return
 	}
-	reply.Value = resp.(string)
+	select {
+	case obj := <-future.respCh:
+		if future.respSeqID == args.SeqID && future.respClientID == args.ClientID {
+			reply.Value = obj.(string)
+		} else {
+			kv.logger.Warnf("conflicted: %d", index)
+			reply.Err = "conflicted"
+		}
+	case <-kv.ctx.Done():
+		kv.logger.Warnf("canceled: %d", index)
+		reply.Err = "canceled"
+	case <-time.After(time.Second):
+		kv.logger.Warnf("timeout: %d", index)
+		reply.Err = "timeout"
+	}
 }
 
 func (kv *KVServer) PutAppend(args *PutAppendArgs, reply *PutAppendReply) {
 	// Your code here.
-	_, err := kv.serve(*args, args.ID)
-	if err != nil {
-		reply.Err = Err(err.Error())
+	command := Op{
+		ClientID: args.ClientID,
+		SeqID:    args.SeqID,
+		Cmd:      args.Op,
+		Key:      args.Key,
+		Value:    args.Value,
 	}
-	return
+	future := &requestFuture{
+		respCh: make(chan interface{}, 1),
+	}
+
+	index, _, isLeader := kv.rf.Start(command)
+	kv.inflightFutures.Store(index, future)
+	defer kv.inflightFutures.Delete(index)
+	kv.logger.Debugf("start %#v", command)
+	if !isLeader {
+		reply.Err = NotLeader
+		return
+	}
+	select {
+	case <-future.respCh:
+	case <-kv.ctx.Done():
+		kv.logger.Warnf("canceled: %d", index)
+		reply.Err = "canceled"
+	case <-time.After(time.Second):
+		kv.logger.Warnf("timeout: %d", index)
+		reply.Err = "timeout"
+	}
 }
 
 //
@@ -115,6 +173,7 @@ func (kv *KVServer) PutAppend(args *PutAppendArgs, reply *PutAppendReply) {
 //
 func (kv *KVServer) Kill() {
 	atomic.StoreInt32(&kv.dead, 1)
+	kv.logger.Infof("KVServer exit")
 	kv.cancel()
 	kv.rf.Kill()
 	// Your code here, if desired.
@@ -124,7 +183,7 @@ func (kv *KVServer) killed() bool {
 	z := atomic.LoadInt32(&kv.dead)
 	return z == 1
 }
-func (kv *KVServer) cleanCalls() {
+func (kv *KVServer) cleanRequests() {
 	ticker := time.NewTicker(time.Second)
 	defer ticker.Stop()
 	for {
@@ -133,14 +192,56 @@ func (kv *KVServer) cleanCalls() {
 			return
 		case <-ticker.C:
 			kv.mu.Lock()
-			for k, call := range kv.calls {
-				if time.Since(call.time) > 10*time.Second {
-					delete(kv.calls, k)
+			for k, call := range kv.requests {
+				if time.Now().Unix()-call.Time > 10 {
+					delete(kv.requests, k)
 				}
 			}
 			kv.mu.Unlock()
 		}
 	}
+}
+
+func (kv *KVServer) processApplyCommand(msg raft.ApplyMsg) {
+	command := msg.Command
+	var resp interface{}
+	op := command.(Op)
+	if op.Cmd == "Get" {
+		resp = kv.data[op.Key]
+	} else {
+		kv.mu.Lock()
+		maxSeq, ok := kv.requests[op.ClientID]
+		if !ok || op.SeqID > maxSeq.SeqID {
+			kv.requests[op.ClientID] = &seq{
+				SeqID: op.SeqID,
+				Time:  time.Now().Unix(),
+			}
+			if op.Cmd == "Append" {
+				kv.data[op.Key] = kv.data[op.Key] + op.Value
+			} else {
+				kv.data[op.Key] = op.Value
+			}
+		} else {
+			kv.requests[op.ClientID].Time = time.Now().Unix()
+		}
+		kv.mu.Unlock()
+		kv.checkSnapshot(msg.CommandIndex)
+	}
+	if obj, ok := kv.inflightFutures.Load(msg.CommandIndex); ok {
+		future := obj.(*requestFuture)
+		future.respClientID = op.ClientID
+		future.respSeqID = op.SeqID
+		kv.logger.Debugf("respond %#v", command)
+		future.respCh <- resp
+	}
+}
+
+func (kv *KVServer) processApplySnapshot(msg raft.ApplyMsg) {
+	d := labgob.NewDecoder(bytes.NewBuffer(msg.SnapshotData))
+	kv.data = make(map[string]string)
+	d.Decode(&kv.data)
+	d.Decode(&kv.requests)
+	msg.SnapshotRespCh <- nil
 }
 
 func (kv *KVServer) processApply() {
@@ -149,30 +250,10 @@ func (kv *KVServer) processApply() {
 		case <-kv.ctx.Done():
 			return
 		case msg := <-kv.applyCh:
-			var resp interface{}
-			var reqID int64
-			switch args := msg.Command.(type) {
-			case GetArgs:
-				reqID = args.ID
-				resp = kv.data[args.Key]
-			case PutAppendArgs:
-				kv.mu.Lock()
-				if _, ok := kv.calls[args.ID]; !ok {
-					if args.Op == "Append" {
-						kv.data[args.Key] = kv.data[args.Key] + args.Value
-					} else {
-						kv.data[args.Key] = args.Value
-					}
-					kv.calls[args.ID] = &call{time: time.Now()}
-				}
-				kv.mu.Unlock()
-				reqID = args.ID
-			}
-			if obj, ok := kv.inflightFutures.Load(reqID); ok {
-				future := obj.(*requestFuture)
-				kv.logger.Debugf("respond %#v", msg.Command)
-				future.respCh <- resp
-				break
+			if msg.SnapshotData != nil {
+				kv.processApplySnapshot(msg)
+			} else {
+				kv.processApplyCommand(msg)
 			}
 		}
 	}
@@ -196,27 +277,26 @@ func StartKVServer(servers []*labrpc.ClientEnd, me int, persister *raft.Persiste
 	// call labgob.Register on structures you want
 	// Go's RPC library to marshall/unmarshall.
 	labgob.Register(Op{})
-	labgob.Register(GetArgs{})
-	labgob.Register(PutAppendArgs{})
+	labgob.Register(seq{})
 
 	kv := new(KVServer)
 	kv.me = me
 	kv.maxraftstate = maxraftstate
+	kv.persister = persister
 
 	// You may need initialization code here.
 
 	kv.applyCh = make(chan raft.ApplyMsg)
-	kv.rf = raft.Make(servers, me, persister, kv.applyCh)
-	kv.data = make(map[string]string)
-	kv.calls = make(map[int64]*call)
 	kv.ctx, kv.cancel = context.WithCancel(context.Background())
+
+	kv.data = make(map[string]string)
+	kv.requests = make(map[int64]*seq)
 	kv.logger = logging.NewLogger(logging.InfoLevel, true, func() string {
 		return fmt.Sprintf("[KVServer] [id %d]", kv.me)
 	})
-
-	// You may need initialization code here.
 	go kv.processApply()
-	go kv.cleanCalls()
-
+	kv.rf = raft.Make(servers, me, persister, kv.applyCh)
+	// You may need initialization code here.
+	go kv.cleanRequests()
 	return kv
 }

@@ -2,6 +2,8 @@ package kvraft
 
 import (
 	"../labrpc"
+	"log"
+	"sync/atomic"
 	"time"
 )
 import "crypto/rand"
@@ -10,7 +12,9 @@ import "math/big"
 type Clerk struct {
 	servers []*labrpc.ClientEnd
 	// You will have to modify this struct.
-	leader int
+	leader   int
+	seq      int64
+	clientID int64
 }
 
 func nrand() int64 {
@@ -23,6 +27,8 @@ func nrand() int64 {
 func MakeClerk(servers []*labrpc.ClientEnd) *Clerk {
 	ck := new(Clerk)
 	ck.servers = servers
+	ck.clientID = nrand()
+	ck.seq = 0
 	// You'll have to add code here.
 	return ck
 }
@@ -44,12 +50,12 @@ func (ck *Clerk) Get(key string) string {
 	// You will have to modify this function.
 	// You will have to modify this function.
 	args := &GetArgs{
-		Key: key,
-		ID:  nrand(),
+		Key:      key,
+		ClientID: ck.clientID,
 	}
 	count := len(ck.servers)
 	t0 := time.Now()
-	for time.Since(t0).Seconds() < 10 {
+	for time.Since(t0).Seconds() < 20 {
 		for i := ck.leader; i < ck.leader+count; i++ {
 			index := i % count
 			reply := &GetReply{}
@@ -61,6 +67,9 @@ func (ck *Clerk) Get(key string) string {
 			}
 		}
 		time.Sleep(100 * time.Millisecond)
+		if time.Since(t0).Seconds() >= 10 {
+			log.Printf("%#v too slow\n", args)
+		}
 	}
 	return ""
 }
@@ -76,15 +85,17 @@ func (ck *Clerk) Get(key string) string {
 //
 func (ck *Clerk) PutAppend(key string, value string, op string) {
 	// You will have to modify this function.
+	seqID := atomic.AddInt64(&ck.seq, 1)
 	args := &PutAppendArgs{
-		Key:   key,
-		Value: value,
-		Op:    op,
-		ID:    nrand(),
+		Key:      key,
+		Value:    value,
+		Op:       op,
+		SeqID:    seqID,
+		ClientID: ck.clientID,
 	}
 	count := len(ck.servers)
 	t0 := time.Now()
-	for time.Since(t0).Seconds() < 5 {
+	for time.Since(t0).Seconds() < 20 {
 		for i := ck.leader; i < ck.leader+count; i++ {
 			index := i % count
 			reply := &PutAppendReply{}
@@ -96,6 +107,9 @@ func (ck *Clerk) PutAppend(key string, value string, op string) {
 			}
 		}
 		time.Sleep(100 * time.Millisecond)
+		if time.Since(t0).Seconds() >= 10 {
+			log.Printf("%#v too slow\n", args)
+		}
 	}
 }
 
