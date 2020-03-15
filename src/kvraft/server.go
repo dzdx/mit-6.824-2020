@@ -107,11 +107,11 @@ func (kv *KVServer) Get(args *GetArgs, reply *GetReply) {
 	index, _, isLeader := kv.rf.Start(command)
 	kv.inflightFutures.Store(index, future)
 	defer kv.inflightFutures.Delete(index)
-	kv.logger.Debugf("start %#v", command)
 	if !isLeader {
 		reply.Err = NotLeader
 		return
 	}
+	kv.logger.Debugf("start %#v", command)
 	select {
 	case obj := <-future.respCh:
 		if future.respSeqID == args.SeqID && future.respClientID == args.ClientID {
@@ -145,13 +145,17 @@ func (kv *KVServer) PutAppend(args *PutAppendArgs, reply *PutAppendReply) {
 	index, _, isLeader := kv.rf.Start(command)
 	kv.inflightFutures.Store(index, future)
 	defer kv.inflightFutures.Delete(index)
-	kv.logger.Debugf("start %#v", command)
 	if !isLeader {
 		reply.Err = NotLeader
 		return
 	}
+	kv.logger.Debugf("start %#v", command)
 	select {
 	case <-future.respCh:
+		if !(future.respSeqID == args.SeqID && future.respClientID == args.ClientID) {
+			kv.logger.Warnf("conflicted: %d", index)
+			reply.Err = "conflicted"
+		}
 	case <-kv.ctx.Done():
 		kv.logger.Warnf("canceled: %d", index)
 		reply.Err = "canceled"
