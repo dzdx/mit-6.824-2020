@@ -490,7 +490,7 @@ func (rf *Raft) AppendEntries(args *AppendEntriesArgs, reply *AppendEntriesReply
 		rf.logstore.deleteLogEntriesRange(deleteFromIndex, lastLogIndex)
 		for _, newLogEntry := range args.LogEntries {
 			if newLogEntry.Index >= deleteFromIndex {
-				rf.logger.Debugf("append log entry %d %#v", newLogEntry.Index, newLogEntry.Command)
+				rf.logger.Debugf("append log entry %d %+v", newLogEntry.Index, newLogEntry.Command)
 				rf.logstore.put(&newLogEntry)
 				rf.setLastLogMeta(newLogEntry.Index, newLogEntry.Term)
 				rf.persist()
@@ -939,7 +939,7 @@ func (rf *Raft) dispatch() {
 	for elem := buf.Front(); elem != nil; elem = elem.Next() {
 		logEntry := elem.Value.(*LogEntry)
 		rf.leaderState.inflightingEntries.Store(logEntry.Index, logEntry)
-		rf.logger.Debugf("append log entry %d %#v", logEntry.Index, logEntry.Command)
+		rf.logger.Debugf("append log entry %d %+v", logEntry.Index, logEntry.Command)
 		rf.logstore.put(logEntry)
 		rf.setLastLogMeta(logEntry.Index, logEntry.Term)
 		rf.persist()
@@ -1184,7 +1184,7 @@ func Make(peers []*labrpc.ClientEnd, me int,
 	rf.snapshotCh = make(chan *SnapshotFuture, 1)
 	rf.installSnapshotCh = make(chan *installSnapshotFuture)
 	rf.ctx, rf.cancel = context.WithCancel(context.Background())
-	rf.logger = logging.NewLogger(logging.WarnLevel, true, func() string {
+	rf.logger = logging.NewLogger(logging.InfoLevel, true, func() string {
 		lastLogIndex, lastLogTerm := rf.getLastLogMeta()
 		return fmt.Sprintf("[Raft] [id %d] [role %10s] [term %4d] [lastlogindex %4d] [lastlogterm %4d]", rf.me, rf.getRole(), rf.currentTerm, lastLogIndex, lastLogTerm)
 	})

@@ -111,7 +111,7 @@ func (kv *KVServer) Get(args *GetArgs, reply *GetReply) {
 		reply.Err = NotLeader
 		return
 	}
-	kv.logger.Debugf("start %#v", command)
+	kv.logger.Debugf("start %+v", command)
 	select {
 	case obj := <-future.respCh:
 		if future.respSeqID == args.SeqID && future.respClientID == args.ClientID {
@@ -149,7 +149,7 @@ func (kv *KVServer) PutAppend(args *PutAppendArgs, reply *PutAppendReply) {
 		reply.Err = NotLeader
 		return
 	}
-	kv.logger.Debugf("start %#v", command)
+	kv.logger.Debugf("start %+v", command)
 	select {
 	case <-future.respCh:
 		if !(future.respSeqID == args.SeqID && future.respClientID == args.ClientID) {
@@ -235,7 +235,7 @@ func (kv *KVServer) processApplyCommand(msg raft.ApplyMsg) {
 		future := obj.(*requestFuture)
 		future.respClientID = op.ClientID
 		future.respSeqID = op.SeqID
-		kv.logger.Debugf("respond %#v", command)
+		kv.logger.Debugf("respond %+v", command)
 		future.respCh <- resp
 	}
 }

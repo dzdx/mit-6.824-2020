@@ -73,7 +73,7 @@ func (sm *ShardMaster) Join(args *JoinArgs, reply *JoinReply) {
 		reply.WrongLeader = true
 		return
 	}
-	sm.logger.Debugf("start %d Join %#v", index, args.Servers)
+	sm.logger.Debugf("start %d Join %v", index, args.Servers)
 	select {
 	case <-future.respCh:
 		if !(future.respClientID == args.ClientID && future.respSeqID == args.SeqID) {
@@ -104,7 +104,7 @@ func (sm *ShardMaster) Leave(args *LeaveArgs, reply *LeaveReply) {
 		reply.WrongLeader = true
 		return
 	}
-	sm.logger.Debugf("start %d Leave %#v", index, args.GIDs)
+	sm.logger.Debugf("start %d Leave %v", index, args.GIDs)
 	select {
 	case <-future.respCh:
 		if !(future.respClientID == args.ClientID && future.respSeqID == args.SeqID) {
@@ -298,7 +298,7 @@ func (sm *ShardMaster) processApplyCommand(msg raft.ApplyMsg) {
 		future := obj.(*requestFuture)
 		future.respClientID = op.ClientID
 		future.respSeqID = op.SeqID
-		sm.logger.Debugf("respond %d %#v", msg.CommandIndex, resp)
+		sm.logger.Debugf("respond %d %+v", msg.CommandIndex, resp)
 		future.respCh <- resp
 	}
 }
@@ -340,7 +340,7 @@ func StartServer(servers []*labrpc.ClientEnd, me int, persister *raft.Persister)
 	sm.configs = make([]Config, 1)
 	sm.configs[0].Groups = map[int][]string{}
 
-	sm.logger = logging.NewLogger(logging.DebugLevel, true, func() string {
+	sm.logger = logging.NewLogger(logging.InfoLevel, true, func() string {
 		return fmt.Sprintf("[ShardMaster] [id %d]", sm.me)
 	})
 

@@ -68,7 +68,7 @@ func (ck *Clerk) Get(key string) string {
 		}
 		time.Sleep(100 * time.Millisecond)
 		if time.Since(t0).Seconds() >= 10 {
-			log.Printf("%#v too slow\n", args)
+			log.Printf("%+v too slow\n", args)
 		}
 	}
 	return ""
@@ -108,7 +108,7 @@ func (ck *Clerk) PutAppend(key string, value string, op string) {
 		}
 		time.Sleep(100 * time.Millisecond)
 		if time.Since(t0).Seconds() >= 10 {
-			log.Printf("%#v too slow\n", args)
+			log.Printf("%+v too slow\n", args)
 		}
 	}
 }
