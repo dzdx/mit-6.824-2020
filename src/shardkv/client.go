@@ -9,12 +9,12 @@ package shardkv
 //
 
 import (
-	"../labrpc"
+	"github.com/dzdx/mit-6.824-2020/src/labrpc"
 	"sync/atomic"
 )
 import "crypto/rand"
 import "math/big"
-import "../shardmaster"
+import "github.com/dzdx/mit-6.824-2020/src/shardmaster"
 import "time"
 
 //
@@ -89,7 +89,7 @@ func (ck *Clerk) Get(key string) string {
 				srv := ck.make_end(servers[si])
 				var reply GetReply
 				ok := srv.Call("ShardKV.Get", &args, &reply)
-				if ok && (reply.Err == OK || reply.Err == ErrNoKey) {
+				if ok && reply.Err == ""{
 					ck.lastLeader = si
 					return reply.Value
 				}
@@ -129,7 +129,7 @@ func (ck *Clerk) PutAppend(key string, value string, op string) {
 				srv := ck.make_end(servers[si])
 				var reply PutAppendReply
 				ok := srv.Call("ShardKV.PutAppend", &args, &reply)
-				if ok && reply.Err == OK {
+				if ok && reply.Err == "" {
 					ck.lastLeader = si
 					return
 				}

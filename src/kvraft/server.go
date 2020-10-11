@@ -1,13 +1,13 @@
 package kvraft
 
 import (
-	"../labgob"
-	"../labrpc"
-	"../logging"
-	"../raft"
 	"bytes"
 	"context"
 	"fmt"
+	"github.com/dzdx/mit-6.824-2020/src/labgob"
+	"github.com/dzdx/mit-6.824-2020/src/labrpc"
+	"github.com/dzdx/mit-6.824-2020/src/logging"
+	"github.com/dzdx/mit-6.824-2020/src/raft"
 	"log"
 	"sync"
 	"sync/atomic"

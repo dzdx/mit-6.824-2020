@@ -5,18 +5,19 @@ package shardmaster
 //
 
 import (
-	"../labrpc"
+	"crypto/rand"
+	"github.com/dzdx/mit-6.824-2020/src/labrpc"
+	"math/big"
 	"sync/atomic"
+	"time"
 )
-import "time"
-import "crypto/rand"
-import "math/big"
 
 type Clerk struct {
 	servers []*labrpc.ClientEnd
 	// Your data here.
-	clientID int64
-	seqID    int64
+	clientID   int64
+	seqID      int64
+	lastLeader int
 }
 
 func nrand() int64 {
@@ -41,14 +42,18 @@ func (ck *Clerk) Query(num int) Config {
 	args.Num = num
 	args.ClientID = ck.clientID
 	args.SeqID = seqID
+	i := ck.lastLeader
 	for {
 		// try each known server.
-		for _, srv := range ck.servers {
+		for range ck.servers {
+			srv := ck.servers[i]
 			var reply QueryReply
 			ok := srv.Call("ShardMaster.Query", args, &reply)
 			if ok && reply.WrongLeader == false {
+				ck.lastLeader = i
 				return reply.Config
 			}
+			i = (i + 1) % len(ck.servers)
 		}
 		time.Sleep(100 * time.Millisecond)
 	}
@@ -62,14 +67,18 @@ func (ck *Clerk) Join(servers map[int][]string) {
 	args.ClientID = ck.clientID
 	args.SeqID = seqID
 
+	i := ck.lastLeader
 	for {
 		// try each known server.
-		for _, srv := range ck.servers {
+		for  range ck.servers {
+			srv := ck.servers[i]
 			var reply JoinReply
 			ok := srv.Call("ShardMaster.Join", args, &reply)
 			if ok && reply.WrongLeader == false {
+				ck.lastLeader = i
 				return
 			}
+			i = (i+1) % len(ck.servers)
 		}
 		time.Sleep(100 * time.Millisecond)
 	}
@@ -83,14 +92,18 @@ func (ck *Clerk) Leave(gids []int) {
 	args.ClientID = ck.clientID
 	args.SeqID = seqID
 
+	i := ck.lastLeader
 	for {
 		// try each known server.
-		for _, srv := range ck.servers {
+		for range ck.servers {
+			srv := ck.servers[i]
 			var reply LeaveReply
 			ok := srv.Call("ShardMaster.Leave", args, &reply)
 			if ok && reply.WrongLeader == false {
+				ck.lastLeader = i
 				return
 			}
+			i = (i+1) % len(ck.servers)
 		}
 		time.Sleep(100 * time.Millisecond)
 	}
@@ -105,14 +118,18 @@ func (ck *Clerk) Move(shard int, gid int) {
 	args.ClientID = ck.clientID
 	args.SeqID = seqID
 
+	i := ck.lastLeader
 	for {
 		// try each known server.
-		for _, srv := range ck.servers {
+		for  range ck.servers {
+			srv := ck.servers[i]
 			var reply MoveReply
 			ok := srv.Call("ShardMaster.Move", args, &reply)
 			if ok && reply.WrongLeader == false {
+				ck.lastLeader =i
 				return
 			}
+			i = (i+1) % len(ck.servers)
 		}
 		time.Sleep(100 * time.Millisecond)
 	}

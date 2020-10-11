@@ -49,7 +49,7 @@ package labrpc
 //   pass svc to srv.AddService()
 //
 
-import "../labgob"
+import "github.com/dzdx/mit-6.824-2020/src/labgob"
 import "bytes"
 import "reflect"
 import "sync"

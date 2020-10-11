@@ -1,7 +1,7 @@
 package kvraft
 
 import (
-	"../labrpc"
+	"github.com/dzdx/mit-6.824-2020/src/labrpc"
 	"log"
 	"sync/atomic"
 	"time"

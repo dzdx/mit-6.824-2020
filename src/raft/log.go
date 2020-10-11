@@ -1,9 +1,9 @@
 package raft
 
 import (
-	"../labgob"
 	"bytes"
 	"fmt"
+	"github.com/dzdx/mit-6.824-2020/src/labgob"
 	"math"
 	"sort"
 	"sync"

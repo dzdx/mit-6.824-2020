@@ -1,7 +1,7 @@
 package kvraft
 
 import (
-	"../labrpc"
+	"github.com/dzdx/mit-6.824-2020/src/labrpc"
 	"log"
 )
 import "testing"
@@ -14,7 +14,7 @@ import "math/rand"
 import "encoding/base64"
 import "sync"
 import "runtime"
-import "../raft"
+import "github.com/dzdx/mit-6.824-2020/src/raft"
 import "fmt"
 import "time"
 import "sync/atomic"

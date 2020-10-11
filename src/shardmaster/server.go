@@ -1,16 +1,16 @@
 package shardmaster
 
 import (
-	"../logging"
-	"../raft"
 	"context"
 	"fmt"
+	"github.com/dzdx/mit-6.824-2020/src/labgob"
+	"github.com/dzdx/mit-6.824-2020/src/labrpc"
+	"github.com/dzdx/mit-6.824-2020/src/logging"
+	"github.com/dzdx/mit-6.824-2020/src/raft"
 	"math"
+	"sync"
 	"time"
 )
-import "../labrpc"
-import "sync"
-import "../labgob"
 
 type ShardMaster struct {
 	mu      sync.Mutex
@@ -73,7 +73,7 @@ func (sm *ShardMaster) Join(args *JoinArgs, reply *JoinReply) {
 		reply.WrongLeader = true
 		return
 	}
-	sm.logger.Debugf("start %d Join %v", index, args.Servers)
+	sm.logger.Infof("start %d Join %v", index, args.Servers)
 	select {
 	case <-future.respCh:
 		if !(future.respClientID == args.ClientID && future.respSeqID == args.SeqID) {
@@ -104,7 +104,7 @@ func (sm *ShardMaster) Leave(args *LeaveArgs, reply *LeaveReply) {
 		reply.WrongLeader = true
 		return
 	}
-	sm.logger.Debugf("start %d Leave %v", index, args.GIDs)
+	sm.logger.Infof("start %d Leave %v", index, args.GIDs)
 	select {
 	case <-future.respCh:
 		if !(future.respClientID == args.ClientID && future.respSeqID == args.SeqID) {
@@ -136,7 +136,7 @@ func (sm *ShardMaster) Move(args *MoveArgs, reply *MoveReply) {
 		reply.WrongLeader = true
 		return
 	}
-	sm.logger.Debugf("start %d Move Shard(%d)=>Gid(%d)", index, args.Shard, args.GID)
+	sm.logger.Infof("start %d Move Shard(%d)=>Gid(%d)", index, args.Shard, args.GID)
 	select {
 	case <-future.respCh:
 		if !(future.respClientID == args.ClientID && future.respSeqID == args.SeqID) {
@@ -231,6 +231,7 @@ func minShardGid(gid2shards map[int][]int) int {
 	}
 	return ret
 }
+
 func (sm *ShardMaster) rebalanceShards(config *Config, isJoin bool, gid int) {
 	gid2shards := toGid2shards(config)
 	if isJoin {

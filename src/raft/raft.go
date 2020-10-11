@@ -18,13 +18,13 @@ package raft
 //
 
 import (
-	"../labgob"
-	"../labrpc"
-	"../logging"
 	"bytes"
 	"container/list"
 	"context"
 	"fmt"
+	"github.com/dzdx/mit-6.824-2020/src/labgob"
+	"github.com/dzdx/mit-6.824-2020/src/labrpc"
+	"github.com/dzdx/mit-6.824-2020/src/logging"
 	"os"
 	"sort"
 	"sync"
@@ -226,9 +226,9 @@ func (rf *Raft) GetState() (int, bool) {
 func (rf *Raft) encodeState() []byte {
 	w := new(bytes.Buffer)
 	e := labgob.NewEncoder(w)
-	e.Encode(rf.getCurrentTerm())
-	e.Encode(rf.votedFor)
-	e.Encode(rf.votedForTerm)
+	_ = e.Encode(rf.getCurrentTerm())
+	_ = e.Encode(rf.votedFor)
+	_ = e.Encode(rf.votedForTerm)
 	rf.logstore.encode(e)
 	return w.Bytes()
 }
@@ -801,6 +801,7 @@ func (rf *Raft) getTermByIndex(index uint64) uint64 {
 		entry := rf.logstore.get(index)
 		if entry == nil {
 			rf.logger.Errorf("log entry %d not existed", index)
+			return 0
 		}
 		return entry.Term
 	}
@@ -1068,7 +1069,7 @@ func (rf *Raft) takeSnapshot(future *SnapshotFuture) {
 	}
 	var buf bytes.Buffer
 	e := labgob.NewEncoder(&buf)
-	e.Encode(snapshotEntry)
+	_ = e.Encode(snapshotEntry)
 	rf.snapshotMutex.Lock()
 	rf.logstore.deleteLogEntriesRange(0, logEntry.Index)
 	rf.persister.SaveStateAndSnapshot(rf.encodeState(), buf.Bytes())
@@ -1090,7 +1091,7 @@ func (rf *Raft) installSnapshot(future *installSnapshotFuture) {
 	}
 	d := labgob.NewDecoder(bytes.NewBuffer(future.Data))
 	snapshotEntry := &snapshotEntry{}
-	d.Decode(snapshotEntry)
+	_ = d.Decode(snapshotEntry)
 	snapshotRespCh := make(chan error, 1)
 	msg := ApplyMsg{
 		SnapshotData:   snapshotEntry.Data,

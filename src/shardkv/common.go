@@ -1,5 +1,9 @@
 package shardkv
 
+import (
+	"github.com/dzdx/mit-6.824-2020/src/shardmaster"
+)
+
 //
 // Sharded key/value server.
 // Lots of replica groups, each running op-at-a-time paxos.
@@ -10,8 +14,6 @@ package shardkv
 //
 
 const (
-	OK             = "OK"
-	ErrNoKey       = "ErrNoKey"
 	ErrWrongGroup  = "ErrWrongGroup"
 	ErrWrongLeader = "ErrWrongLeader"
 )
@@ -45,4 +47,27 @@ type GetArgs struct {
 type GetReply struct {
 	Err   Err
 	Value string
+}
+
+type ShardMigrationArgs struct {
+	Shard int
+}
+type ShardMigrationReply struct {
+	Err      Err
+	Data     map[string]string
+	Requests map[int64]int64
+}
+
+func maxInt64(a, b int64) int64 {
+	if a > b {
+		return a
+	}
+	return b
+
+}
+
+type UpdateConfig struct {
+	Config   shardmaster.Config
+	Data     map[string]string
+	Requests map[int64]int64
 }
